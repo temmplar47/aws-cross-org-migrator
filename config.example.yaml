@@ -1,0 +1,51 @@
+# ============================================================================
+# 跨组织 AWS 账户迁移系统 - 配置示例
+# Cross-organization AWS account migration - example config
+# ============================================================================
+
+# 新组织（接收方）配置
+new_organization:
+  # 新组织管理账户对应的 AWS CLI profile（需要 organizations:InviteAccountToOrganization 权限）
+  management_account_profile: "mgmt-new"
+  # 新组织管理账户的 12 位 ID（用于过滤目标账户收到的 handshake）
+  management_account_id: "111111111111"
+  # 可选：账户接受邀请后移动到的目标 OU（不填则留在 root）
+  target_ou_id: "ou-xxxx"
+  # 可选：移动账户前等待其在新组织中可见的轮询上限（秒）
+  move_poll_timeout: 300
+
+# 旧组织 IAM Identity Center（SSO）配置
+old_organization_sso:
+  # AWS CLI Profile 名称（用于 `aws sso login --profile <name>` 生成 SSO token）
+  # 前端「SSO Login」按钮会调用此 profile 的登录命令
+  aws_profile: "sso-old"
+  # IAM Identity Center 访问门户地址（AWS CLI `aws configure sso` 时填写的 start URL）
+  start_url: "https://my-old-org.awsapps.com/start"
+  # SSO 所在的 AWS Region（Identity Center 主区域）
+  sso_region: "ap-southeast-1"
+  # 旧组织 Identity Center 授予用户、且能访问目标账户的 Permission Set / 角色名
+  # 该角色必须包含 organizations:AcceptHandshake 权限（例如 AdministratorAccess 或自定义）
+  role_name: "AWSAdministratorAccess"
+  # 可选：若不依赖本地 AWS CLI v2 的 SSO 缓存，可直接在此填入 access token
+  # 留空则自动从 ~/.aws/sso/cache 读取（需先 `aws sso login --profile <aws_profile>`）
+  access_token: ""
+
+# 待迁移的目标账户列表（这些账户当前在旧组织中，将受邀加入新组织）
+target_accounts:
+  - id: "222222222222"
+    email: "account-2@example.com"
+  - id: "333333333333"
+    email: "account-3@example.com"
+  - id: "444444444444"
+    email: "account-4@example.com"
+
+# 通用设置
+settings:
+  # 调用 organizations API 时使用的区域（通常 us-east-1）
+  region: "us-east-1"
+  # 迁移状态记录文件（保存每个账户的 handshake id 与状态）
+  state_file: "migration_state.json"
+  # 接受 handshake 前的轮询间隔（秒）
+  poll_interval: 10
+  # 单账户接受 handshake 的最大轮询次数
+  poll_max_attempts: 30

@@ -1,0 +1,17 @@
+# Real migration data — never commit (contains account ids, SSO URLs, run state)
+config.yaml
+migration_state.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Test artifacts
+test_cache/
+
+# Local debug output
+out.txt
+err.txt
+sse_out*.txt

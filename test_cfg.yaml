@@ -1,0 +1,22 @@
+# 跨组织 AWS 账户迁移 - 配置
+new_organization:
+  management_account_profile: "mgmt-new"
+  management_account_id: "111111111111"
+  target_ou_id: ""
+  move_poll_timeout: 300
+
+old_organization_sso:
+  start_url: "https://x.awsapps.com/start"
+  sso_region: "ap-southeast-1"
+  role_name: "Admin"
+  access_token: ""
+
+target_accounts:
+  - id: "222222222222"
+    email: "a@b.com"
+
+settings:
+  region: "us-east-1"
+  state_file: "migration_state.json"
+  poll_interval: 10
+  poll_max_attempts: 30
