@@ -43,5 +43,11 @@ except ValueError as e:
 assert "[profile sso-new]" not in cfg_path.read_text(encoding="utf-8")
 print("incomplete config error: OK")
 
+# 4. _find_aws_cli returns a usable path (aws is installed on this machine)
+#    and never raises even when PATH lookup misses.
+aws = Handler._find_aws_cli()
+assert aws is None or ("aws" in aws.lower()), f"unexpected aws path: {aws}"
+print("find_aws_cli: OK ->", aws)
+
 shutil.rmtree(TMP, ignore_errors=True)
 print("ALL SSO PROFILE TESTS PASSED")

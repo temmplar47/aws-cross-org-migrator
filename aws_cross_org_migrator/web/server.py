@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import subprocess
 import sys
@@ -508,12 +509,13 @@ class Handler(BaseHTTPRequestHandler):
                 "need_profile": True,
             }
 
-        import shutil
-        if not shutil.which("aws"):
+        aws_exe = self._find_aws_cli()
+        if not aws_exe:
             return {
                 "ok": False,
                 "error": (
-                    "本机未安装 AWS CLI（找不到 aws 命令）。请先安装 AWS CLI v2："
+                    "本机未找到 aws 命令。若刚安装了 AWS CLI，请重启本 web 服务后重试"
+                    "（PATH 变更只对新进程生效）；尚未安装则见："
                     "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
                 ),
             }
@@ -538,7 +540,7 @@ class Handler(BaseHTTPRequestHandler):
                         "cmd", "/c",
                         f"title AWS SSO Login - {profile} & "
                         f"echo Logging in with profile: {profile} & "
-                        f"aws sso login --profile {profile} & "
+                        f'"{aws_exe}" sso login --profile {profile} & '
                         f"echo. & echo ============================================ & "
                         f"echo If login succeeded: close this window and refresh the page. & "
                         f"echo If an error is shown above: fix it and click SSO Login again. & "
@@ -548,7 +550,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
             else:
                 subprocess.Popen(
-                    ["x-terminal-emulator", "-e", f"aws sso login --profile {profile}"],
+                    ["x-terminal-emulator", "-e", f"{aws_exe} sso login --profile {profile}"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
@@ -560,6 +562,33 @@ class Handler(BaseHTTPRequestHandler):
             return {"ok": False, "error": f"找不到终端: {e}"}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    @staticmethod
+    def _find_aws_cli():
+        """Locate the aws executable.
+
+        PATH first; then the standard AWS CLI v2 install locations, because the
+        web server inherits the PATH from when it was started — an AWS CLI
+        installed afterwards is invisible to shutil.which until restart.
+        Returns the full path string, or None.
+        """
+        import shutil
+        found = shutil.which("aws")
+        if found:
+            return found
+        candidates = [
+            Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+            / "Amazon" / "AWSCLIV2" / "aws.exe",
+            Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
+            / "Amazon" / "AWSCLIV2" / "aws.exe",
+            Path.home() / "AppData" / "Local" / "Programs" / "Amazon" / "AWSCLIV2" / "aws.exe",
+            Path("/usr/local/bin/aws"),
+            Path("/usr/bin/aws"),
+        ]
+        for c in candidates:
+            if c.exists():
+                return str(c)
+        return None
 
     @staticmethod
     def _ensure_sso_profile(profile: str, sso_cfg: dict, aws_config_path: Path = None) -> bool:
