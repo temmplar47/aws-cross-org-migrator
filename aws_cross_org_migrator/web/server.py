@@ -556,6 +556,10 @@ class Handler(BaseHTTPRequestHandler):
                 # .bat file quoting behaves normally, and the trailing pause
                 # keeps the window open even when the login fails.
                 bat_path = self._write_login_bat(aws_exe, profile)
+                self.app.hub.publish(
+                    "INFO",
+                    f"SSO Login 脚本已生成并启动: {bat_path} （代码版本 {self.app.version}）",
+                )
                 subprocess.Popen(
                     ["cmd", "/c", str(bat_path)],
                     creationflags=CREATE_NEW_CONSOLE,
@@ -592,7 +596,9 @@ class Handler(BaseHTTPRequestHandler):
             "pause\r\n"
         )
         bat_path = Path(tempfile.gettempdir()) / "aws_sso_login_helper.bat"
-        bat_path.write_text(content, encoding="ascii", errors="replace", newline="")
+        # write_bytes: Path.write_text(newline=...) requires Python 3.10+,
+        # and the content already carries explicit CRLF line endings.
+        bat_path.write_bytes(content.encode("ascii", "replace"))
         return bat_path
 
     @staticmethod
