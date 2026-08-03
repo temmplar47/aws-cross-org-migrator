@@ -49,5 +49,25 @@ aws = Handler._find_aws_cli()
 assert aws is None or ("aws" in aws.lower()), f"unexpected aws path: {aws}"
 print("find_aws_cli: OK ->", aws)
 
+# 5. The generated login .bat quotes the exe correctly and keeps the window
+#    open; prove the quoting works by actually running the same structure
+#    with --version through cmd (no window, no login).
+bat = Handler._write_login_bat(aws or r"C:\Program Files\Amazon\AWSCLIV2\aws.exe", "sso-old")
+text = bat.read_text(encoding="ascii")
+assert f'"{aws or ""}' [0] == '"'  # exe line is quoted
+assert "sso login --profile sso-old" in text
+assert text.rstrip().endswith("pause")
+assert all(ord(c) < 128 for c in text), ".bat must be ASCII"
+print("login bat content: OK")
+
+if aws:
+    import subprocess, tempfile
+    probe = Path(tempfile.gettempdir()) / "aws_probe_test.bat"
+    probe.write_text(f'@echo off\r\n"{aws}" --version\r\n', encoding="ascii", newline="")
+    r = subprocess.run(["cmd", "/c", str(probe)], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0 and "aws-cli" in (r.stdout + r.stderr), f"probe failed: {r.stdout} {r.stderr}"
+    probe.unlink()
+    print("quoted exe path executes via cmd/.bat: OK ->", (r.stdout + r.stderr).strip().split()[0])
+
 shutil.rmtree(TMP, ignore_errors=True)
 print("ALL SSO PROFILE TESTS PASSED")

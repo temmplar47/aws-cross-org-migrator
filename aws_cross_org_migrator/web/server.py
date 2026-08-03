@@ -531,21 +531,15 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if platform.system() == "Windows":
                 CREATE_NEW_CONSOLE = 0x00000010
-                # Chain with single `&` (not `&&`) so the trailing `pause` runs
-                # even when `aws sso login` fails — otherwise the console
-                # window closes instantly and the error is unreadable. Do NOT
-                # redirect stdout/stderr: the output must show in that window.
+                # Run via a generated .bat file: passing the command as a
+                # Popen list mangles embedded quotes (list2cmdline escapes
+                # them as \" which cmd.exe does not understand), breaking
+                # quoted paths like "C:\Program Files\...\aws.exe". Inside a
+                # .bat file quoting behaves normally, and the trailing pause
+                # keeps the window open even when the login fails.
+                bat_path = self._write_login_bat(aws_exe, profile)
                 subprocess.Popen(
-                    [
-                        "cmd", "/c",
-                        f"title AWS SSO Login - {profile} & "
-                        f"echo Logging in with profile: {profile} & "
-                        f'"{aws_exe}" sso login --profile {profile} & '
-                        f"echo. & echo ============================================ & "
-                        f"echo If login succeeded: close this window and refresh the page. & "
-                        f"echo If an error is shown above: fix it and click SSO Login again. & "
-                        f"pause"
-                    ],
+                    ["cmd", "/c", str(bat_path)],
                     creationflags=CREATE_NEW_CONSOLE,
                 )
             else:
@@ -562,6 +556,26 @@ class Handler(BaseHTTPRequestHandler):
             return {"ok": False, "error": f"找不到终端: {e}"}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    @staticmethod
+    def _write_login_bat(aws_exe: str, profile: str) -> "Path":
+        """Write the SSO-login helper .bat and return its path (ASCII only —
+        cmd reads .bat files in the OEM codepage, not UTF-8)."""
+        import tempfile
+        content = (
+            "@echo off\r\n"
+            f"title AWS SSO Login - {profile}\r\n"
+            f"echo Logging in with profile: {profile}\r\n"
+            f'"{aws_exe}" sso login --profile {profile}\r\n'
+            "echo.\r\n"
+            "echo ============================================\r\n"
+            "echo If login succeeded: close this window and refresh the page.\r\n"
+            "echo If an error is shown above: fix it and click SSO Login again.\r\n"
+            "pause\r\n"
+        )
+        bat_path = Path(tempfile.gettempdir()) / "aws_sso_login_helper.bat"
+        bat_path.write_text(content, encoding="ascii", errors="replace", newline="")
+        return bat_path
 
     @staticmethod
     def _find_aws_cli():
