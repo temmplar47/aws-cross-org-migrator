@@ -18,6 +18,8 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from botocore.exceptions import ProfileNotFound
+
 from ..config import Config, StateStore
 from ..invite import Inviter
 from ..accept import HandshakeAcceptor
@@ -216,6 +218,14 @@ def _run_action(app: AppState, action: str) -> None:
             hub.publish("WARNING", "未配置 target_ou_id，跳过移动步骤。")
 
         hub.publish("INFO", "==> 任务完成。")
+    except ProfileNotFound as e:
+        app.hub.publish("ERROR", f"AWS CLI profile 不存在: {e}")
+        app.hub.publish(
+            "ERROR",
+            "本机 ~/.aws 中没有该 profile。请在「配置」卡片输入新组织管理账户的 "
+            "AK/SK 并点「自动识别」（会自动在本机创建 profile），或在终端运行 "
+            "`aws configure --profile <profile名>` 后重试。",
+        )
     except Exception as e:  # pragma: no cover - defensive
         LOG.exception("action failed")
         app.hub.publish("ERROR", f"任务异常: {e}")
@@ -296,6 +306,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/sso-login":
             self._json(self._do_sso_login())
+            return
+        if path == "/api/clear":
+            self._json(self._clear_all())
             return
         self._send(404, b"not found", "text/plain; charset=utf-8")
 
@@ -379,16 +392,47 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             except Exception:
                 pass
+            profile = f"aws-mgmt-{account_id}"
+            profile_created = self._write_aws_profile(profile, ak, sk, region)
             return {
                 "ok": True,
                 "account_id": account_id,
                 "arn": arn,
                 "in_org": in_org,
                 "org_master": org_master,
-                "suggested_profile": f"aws-mgmt-{account_id}",
+                "suggested_profile": profile,
+                "profile_created": profile_created,
             }
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    @staticmethod
+    def _write_aws_profile(profile: str, ak: str, sk: str, region: str) -> bool:
+        """Persist the validated AK/SK as a named profile in ~/.aws.
+
+        Without this the auto-recognition only fills the profile NAME into the
+        config, and the invite step later fails with ProfileNotFound.
+        Returns True if newly written, False if the profile already existed.
+        """
+        aws_dir = Path.home() / ".aws"
+        aws_dir.mkdir(parents=True, exist_ok=True)
+        cred_path = aws_dir / "credentials"
+        cfg_path = aws_dir / "config"
+        created = False
+
+        cred_text = cred_path.read_text(encoding="utf-8") if cred_path.exists() else ""
+        if f"[{profile}]" not in cred_text:
+            with open(cred_path, "a", encoding="utf-8") as f:
+                f.write(f"\n[{profile}]\naws_access_key_id = {ak}\naws_secret_access_key = {sk}\n")
+            created = True
+
+        cfg_text = cfg_path.read_text(encoding="utf-8") if cfg_path.exists() else ""
+        prof_sec = f"[profile {profile}]"
+        if prof_sec not in cfg_text:
+            with open(cfg_path, "a", encoding="utf-8") as f:
+                f.write(f"\n{prof_sec}\nregion = {region}\n")
+            created = True
+        return created
 
     # ----------------------------------------------------------------------
     # POST /api/parse-accounts
@@ -504,6 +548,24 @@ class Handler(BaseHTTPRequestHandler):
             or ""
         )
         return {"profile": profile or None, "has_profile": bool(profile)}
+
+    # ----------------------------------------------------------------------
+    # POST /api/clear
+    # ----------------------------------------------------------------------
+    def _clear_all(self):
+        """One-click reset: empty the target account list and all per-account state."""
+        if self.app.busy:
+            return {"ok": False, "error": "任务运行中，请等待完成后再清空。"}
+        try:
+            self.app.cfg.target_accounts = []
+            from .index import config_to_yaml
+            self.app.config_path.write_text(config_to_yaml(self.app.cfg), encoding="utf-8")
+            self.app.state.data = {}
+            self.app.state.save()
+            self.app.hub.publish("INFO", "已清空目标账户列表与全部账户迁移状态。")
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     def _save_config(self, data):
         try:

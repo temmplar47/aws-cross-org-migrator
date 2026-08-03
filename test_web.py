@@ -68,6 +68,19 @@ def test():
     assert events, "no SSE events captured"
     print("SSE OK: captured", len(events), "events; first:", events[0]["level"], events[0]["msg"][:50])
 
+    # one-click clear: accounts + state wiped, then restore config
+    time.sleep(1.5)  # let the accept action finish so /api/clear is not busy
+    r = post("/api/clear", {})
+    assert r.get("ok"), f"clear failed: {r}"
+    st3 = get("/api/status")
+    assert st3["accounts"] == [], f"accounts not cleared: {st3}"
+    cfg3 = get("/api/config")
+    assert cfg3["target_accounts"] == [], "config target_accounts not cleared"
+    print("clear OK: accounts + state wiped")
+    r = post("/api/config", new_cfg)
+    assert r.get("ok"), "config restore failed"
+    print("config restored after clear")
+
     print("\nALL WEB TESTS PASSED")
 
 

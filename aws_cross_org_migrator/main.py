@@ -38,6 +38,8 @@ import logging
 import sys
 from pathlib import Path
 
+from botocore.exceptions import ProfileNotFound
+
 from .config import Config, StateStore
 from .invite import Inviter
 from .accept import HandshakeAcceptor
@@ -251,7 +253,15 @@ def main(argv=None) -> int:
         "run": cmd_run,
         "web": cmd_web,
     }
-    return handlers[args.command](args)
+    try:
+        return handlers[args.command](args)
+    except ProfileNotFound as e:
+        print(f"\n[ERROR] AWS CLI profile 不存在: {e}")
+        print("  请先在本机创建该 profile：")
+        print("    python setup_new_org_profile.py <ACCESS_KEY_ID> <SECRET_ACCESS_KEY>")
+        print("  或： aws configure --profile <profile名>")
+        print("  （web 模式下也可在「配置」卡片用 AK/SK 自动识别，会自动创建 profile）")
+        return 1
 
 
 if __name__ == "__main__":

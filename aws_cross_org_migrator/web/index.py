@@ -180,6 +180,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <button class="btn-primary" id="btnRun">🚀 一键运行</button>
       <button class="btn-ghost btn-sm" id="btnRefreshTok">刷新 token</button>
       <button class="btn-ghost btn-sm" id="btnRefreshStatus">刷新状态</button>
+      <button class="btn-ghost btn-sm" id="btnClear" style="color:var(--err);margin-left:auto">🗑 清空账户与状态</button>
     </div>
   </div>
 
@@ -287,10 +288,11 @@ async function resolveCredentials(){
       $('resolveHint').innerHTML=
         `<span style="color:var(--ok)">&#10003; 识别成功！</span>`+
         ` 账户ID: <b>${j.account_id}</b>`+
-        (j.in_org ? ` | <span style="color:var(--ok)">在组织中</span>` : ` | <span style="color:var(--warn)">未在组织</span>`);
+        (j.in_org ? ` | <span style="color:var(--ok)">在组织中</span>` : ` | <span style="color:var(--warn)">未在组织</span>`)+
+        (j.profile_created ? ' | 已在本机创建 CLI profile' : ' | 本机已有该 profile');
       $('c_mgmt_id').value=j.account_id;
       $('c_mgmt_profile').value=j.suggested_profile;
-      toast('已自动填充账户 ID 和 Profile 名称');
+      toast('已自动填充配置并在本机创建 CLI profile');
     } else {
       $('resolveHint').innerHTML=`<span style="color:var(--err)">&#10007; ${j.error}</span>`;
       toast('识别失败: '+j.error, false);
@@ -398,6 +400,13 @@ async function doAction(action){
 $('btnInvite').onclick=()=>doAction('invite');
 $('btnAccept').onclick=()=>doAction('accept');
 $('btnMove').onclick=()=>doAction('move');
+$('btnClear').onclick=async()=>{
+  if(!confirm('将清空配置中的全部目标账户，并删除所有账户的迁移状态记录（migration_state.json）。\n此操作不可恢复，确定继续？')) return;
+  const r=await fetch('/api/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  const j=await r.json();
+  if(j.ok){ toast('已清空目标账户与状态'); loadConfig(); loadStatus(); }
+  else toast('清空失败: '+(j.error||''), false);
+};
 $('btnRun').onclick=()=>{ if(confirm('将依次执行：发邀请 → 接受邀请（需 SSO token）→ 移入 OU。\n确保已 `aws sso login`。继续？')) doAction('run'); };
 
 // ---- collapse ----
