@@ -32,6 +32,11 @@ def test():
     assert "present" in tok
     print("token OK:", tok)
 
+    # sso-login without a configured aws_profile -> friendly error, no window
+    r = post("/api/sso-login", {})
+    assert not r.get("ok") and r.get("need_profile"), f"unexpected sso-login reply: {r}"
+    print("sso-login need_profile OK")
+
     # save config
     new_cfg = {
         "new_org": {"management_account_profile": "mgmt-new",

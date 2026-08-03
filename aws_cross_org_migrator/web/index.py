@@ -348,7 +348,7 @@ async function doSSOLogin(){
   const r=await fetch('/api/sso-login',{method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
   const j=await r.json();
   if(j.ok){
-    toast('已打开 SSO 登录窗口，请在窗口中完成认证');
+    toast(j.profile_created ? '已自动创建 SSO profile 并打开登录窗口' : '已打开 SSO 登录窗口，请在窗口中完成认证');
   } else {
     if(j.need_profile){
       toast('请先填写「AWS CLI Profile」再点 SSO Login', false);

@@ -507,20 +507,44 @@ class Handler(BaseHTTPRequestHandler):
                 ),
                 "need_profile": True,
             }
+
+        import shutil
+        if not shutil.which("aws"):
+            return {
+                "ok": False,
+                "error": (
+                    "本机未安装 AWS CLI（找不到 aws 命令）。请先安装 AWS CLI v2："
+                    "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
+                ),
+            }
+
+        profile_created = False
+        try:
+            profile_created = self._ensure_sso_profile(
+                profile, parsed.get("old_organization_sso", {})
+            )
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+
         try:
             if platform.system() == "Windows":
                 CREATE_NEW_CONSOLE = 0x00000010
+                # Chain with single `&` (not `&&`) so the trailing `pause` runs
+                # even when `aws sso login` fails — otherwise the console
+                # window closes instantly and the error is unreadable. Do NOT
+                # redirect stdout/stderr: the output must show in that window.
                 subprocess.Popen(
                     [
                         "cmd", "/c",
-                        f"title AWS SSO Login --profile {profile} && "
-                        f"echo Logging in with profile: {profile} && "
-                        f"aws sso login --profile {profile} && "
-                        f"echo. && echo Done! Close this window and refresh the page. && pause"
+                        f"title AWS SSO Login - {profile} & "
+                        f"echo Logging in with profile: {profile} & "
+                        f"aws sso login --profile {profile} & "
+                        f"echo. & echo ============================================ & "
+                        f"echo If login succeeded: close this window and refresh the page. & "
+                        f"echo If an error is shown above: fix it and click SSO Login again. & "
+                        f"pause"
                     ],
                     creationflags=CREATE_NEW_CONSOLE,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
                 )
             else:
                 subprocess.Popen(
@@ -528,15 +552,52 @@ class Handler(BaseHTTPRequestHandler):
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-            return {
-                "ok": True,
-                "profile": profile,
-                "hint": "新终端窗口已打开，请在窗口中完成浏览器登录。完成后回到本页面点击「刷新 token」。",
-            }
+            hint = "新终端窗口已打开，请在窗口中完成浏览器登录。完成后回到本页面点击「刷新 token」。"
+            if profile_created:
+                hint = f"已按配置在本机自动创建 SSO profile [{profile}]。" + hint
+            return {"ok": True, "profile": profile, "profile_created": profile_created, "hint": hint}
         except FileNotFoundError as e:
             return {"ok": False, "error": f"找不到终端: {e}"}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    @staticmethod
+    def _ensure_sso_profile(profile: str, sso_cfg: dict, aws_config_path: Path = None) -> bool:
+        """Create the SSO profile in ~/.aws/config from config.yaml if missing.
+
+        On a fresh machine the profile referenced by the config usually does
+        not exist yet; `aws sso login --profile X` then exits immediately with
+        an error. Returns True if the profile was newly written.
+
+        Raises ValueError if the profile is missing and config.yaml lacks the
+        fields needed to create it.
+        """
+        aws_cfg_path = aws_config_path or (Path.home() / ".aws" / "config")
+        cfg_text = aws_cfg_path.read_text(encoding="utf-8") if aws_cfg_path.exists() else ""
+        if f"[profile {profile}]" in cfg_text:
+            return False
+
+        start_url = (sso_cfg.get("start_url") or "").strip()
+        sso_region = (sso_cfg.get("sso_region") or "").strip()
+        role_name = (sso_cfg.get("role_name") or "").strip()
+        if not start_url or not sso_region:
+            raise ValueError(
+                f"本机 ~/.aws/config 中不存在 profile [{profile}]，且配置缺少 "
+                "start_url / sso_region，无法自动创建。请先补全「旧组织 SSO」配置并保存。"
+            )
+
+        aws_cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        # ASCII only: botocore reads this file with the locale encoding.
+        lines = [
+            f"\n[profile {profile}]\n",
+            f"sso_start_url = {start_url}\n",
+            f"sso_region = {sso_region}\n",
+        ]
+        if role_name:
+            lines.append(f"sso_role_name = {role_name}\n")
+        with open(aws_cfg_path, "a", encoding="utf-8") as f:
+            f.writelines(lines)
+        return True
 
     def _sso_login_status_payload(self):
         import yaml
