@@ -87,9 +87,26 @@ class _HubHandler(logging.Handler):
 # ---------------------------------------------------------------------------
 # Server state
 # ---------------------------------------------------------------------------
+def _git_version() -> str:
+    """Short commit hash of the running code, so the UI can prove which
+    version is actually loaded (stale-server confusion is common)."""
+    try:
+        root = Path(__file__).resolve().parents[2]
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=root, capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip()
+    except Exception:
+        pass
+    return "unknown"
+
+
 class AppState:
     def __init__(self, config_path: Path):
         self.config_path = config_path
+        self.version = _git_version()
         self._ensure_config(config_path)
         self.cfg = Config.from_file(config_path)
         self.state = StateStore(self.cfg.settings.state_file)
@@ -330,6 +347,7 @@ class Handler(BaseHTTPRequestHandler):
             },
             "settings": {"region": cfg.settings.region},
             "target_accounts": cfg.target_accounts,
+            "version": self.app.version,
         }
 
     def _status_payload(self):
@@ -744,8 +762,8 @@ def run_server(config_path: str | Path, host: str = "127.0.0.1", port: int = 878
     server = ThreadingHTTPServer((host, port), make_handler)
 
     url = f"http://{host}:{port}/"
-    LOG.info("Migration UI serving at %s", url)
-    print(f"\n  AWS 跨组织迁移 · 友好前端已启动： {url}\n  (Ctrl+C 退出)\n")
+    LOG.info("Migration UI serving at %s (version %s)", url, app.version)
+    print(f"\n  AWS 跨组织迁移 · 友好前端已启动： {url}\n  代码版本: {app.version}\n  (Ctrl+C 退出)\n")
     if open_browser:
         try:
             webbrowser.open(url)

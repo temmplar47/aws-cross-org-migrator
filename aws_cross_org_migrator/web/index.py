@@ -96,7 +96,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <div>
       <h1>AWS 跨组织账户迁移</h1>
     </div>
-    <span class="pill" id="busyPill" style="margin-left:auto;display:none">运行中…</span>
+    <span class="pill" id="verPill" style="margin-left:auto" title="当前运行的代码版本（git commit）">ver …</span>
+    <span class="pill" id="busyPill" style="display:none">运行中…</span>
   </header>
   <div class="sub">从新组织批量邀请旧组织账户 → 用旧组织 IAM Identity Center 登录门户取得各账户临时凭证 → 以目标账户身份接受邀请。</div>
 
@@ -227,6 +228,7 @@ function badge(val, okText='是', noText='否'){
 // ---- load config ----
 async function loadConfig(){
   const r = await fetch('/api/config'); const c = await r.json();
+  $('verPill').textContent = 'ver ' + (c.version||'?');
   $('c_mgmt_profile').value = c.new_org.management_account_profile||'';
   $('c_mgmt_id').value     = c.new_org.management_account_id||'';
   $('c_ou').value          = c.new_org.target_ou_id||'';
