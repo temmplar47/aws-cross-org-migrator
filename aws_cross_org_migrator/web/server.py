@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -538,13 +539,20 @@ class Handler(BaseHTTPRequestHandler):
                 ),
             }
 
-        profile_created = False
+        sso_cfg = parsed.get("old_organization_sso", {})
         try:
-            profile_created = self._ensure_sso_profile(
-                profile, parsed.get("old_organization_sso", {})
-            )
+            profile_status = self._ensure_sso_profile(profile, sso_cfg)
         except ValueError as e:
             return {"ok": False, "error": str(e)}
+        if profile_status == "created":
+            self.app.hub.publish(
+                "INFO", f"已在本机创建 SSO profile [{profile}]（start_url={sso_cfg.get('start_url')}）")
+        elif profile_status == "updated":
+            self.app.hub.publish(
+                "INFO",
+                f"已把配置中的 Start URL/Region 同步到本机 profile [{profile}]"
+                f"（start_url={sso_cfg.get('start_url')}）",
+            )
 
         try:
             if platform.system() == "Windows":
@@ -571,9 +579,17 @@ class Handler(BaseHTTPRequestHandler):
                     stderr=subprocess.DEVNULL,
                 )
             hint = "新终端窗口已打开，请在窗口中完成浏览器登录。完成后回到本页面点击「刷新 token」。"
-            if profile_created:
+            if profile_status == "created":
                 hint = f"已按配置在本机自动创建 SSO profile [{profile}]。" + hint
-            return {"ok": True, "profile": profile, "profile_created": profile_created, "hint": hint}
+            elif profile_status == "updated":
+                hint = f"已将新的 Start URL 同步到本机 profile [{profile}]。" + hint
+            return {
+                "ok": True,
+                "profile": profile,
+                "profile_status": profile_status,
+                "profile_created": profile_status == "created",
+                "hint": hint,
+            }
         except FileNotFoundError as e:
             return {"ok": False, "error": f"找不到终端: {e}"}
         except Exception as e:
@@ -629,42 +645,155 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     @staticmethod
-    def _ensure_sso_profile(profile: str, sso_cfg: dict, aws_config_path: Path = None) -> bool:
-        """Create the SSO profile in ~/.aws/config from config.yaml if missing.
+    def _ensure_sso_profile(profile: str, sso_cfg: dict, aws_config_path: Path = None) -> str:
+        """Create or SYNC the SSO profile in ~/.aws/config from config.yaml.
 
-        On a fresh machine the profile referenced by the config usually does
-        not exist yet; `aws sso login --profile X` then exits immediately with
-        an error. Returns True if the profile was newly written.
+        `aws sso login` reads sso_start_url from the AWS profile, not from
+        config.yaml — after the user edits the Start URL in the UI the profile
+        must be updated too, or login keeps using the old URL forever.
 
-        Raises ValueError if the profile is missing and config.yaml lacks the
-        fields needed to create it.
+        Returns "created", "updated" or "unchanged".
+        Raises ValueError if the profile must be created but config.yaml lacks
+        the required fields.
         """
         aws_cfg_path = aws_config_path or (Path.home() / ".aws" / "config")
-        cfg_text = aws_cfg_path.read_text(encoding="utf-8") if aws_cfg_path.exists() else ""
-        if f"[profile {profile}]" in cfg_text:
-            return False
+        if aws_cfg_path.exists():
+            raw = aws_cfg_path.read_bytes()
+            text, enc = None, "utf-8"
+            import locale
+            for candidate in ("utf-8", locale.getpreferredencoding(False)):
+                try:
+                    text, enc = raw.decode(candidate), candidate
+                    break
+                except UnicodeDecodeError:
+                    continue
+            if text is None:
+                text, enc = raw.decode("utf-8", "replace"), "utf-8"
+        else:
+            text, enc = "", "utf-8"
 
         start_url = (sso_cfg.get("start_url") or "").strip()
         sso_region = (sso_cfg.get("sso_region") or "").strip()
         role_name = (sso_cfg.get("role_name") or "").strip()
-        if not start_url or not sso_region:
-            raise ValueError(
-                f"本机 ~/.aws/config 中不存在 profile [{profile}]，且配置缺少 "
-                "start_url / sso_region，无法自动创建。请先补全「旧组织 SSO」配置并保存。"
-            )
 
-        aws_cfg_path.parent.mkdir(parents=True, exist_ok=True)
-        # ASCII only: botocore reads this file with the locale encoding.
-        lines = [
-            f"\n[profile {profile}]\n",
-            f"sso_start_url = {start_url}\n",
-            f"sso_region = {sso_region}\n",
-        ]
-        if role_name:
-            lines.append(f"sso_role_name = {role_name}\n")
-        with open(aws_cfg_path, "a", encoding="utf-8") as f:
-            f.writelines(lines)
-        return True
+        header = f"[profile {profile}]"
+        exists = any(l.strip() == header for l in text.splitlines())
+
+        if not exists:
+            if not start_url or not sso_region:
+                raise ValueError(
+                    f"本机 ~/.aws/config 中不存在 profile [{profile}]，且配置缺少 "
+                    "start_url / sso_region，无法自动创建。请先补全「旧组织 SSO」配置并保存。"
+                )
+            aws_cfg_path.parent.mkdir(parents=True, exist_ok=True)
+            # ASCII only: botocore reads this file with the locale encoding.
+            lines = [
+                f"\n{header}\n",
+                f"sso_start_url = {start_url}\n",
+                f"sso_region = {sso_region}\n",
+            ]
+            if role_name:
+                lines.append(f"sso_role_name = {role_name}\n")
+            with open(aws_cfg_path, "a", encoding="utf-8") as f:
+                f.writelines(lines)
+            return "created"
+
+        # Profile exists -> sync it with config.yaml. A profile may reference
+        # an [sso-session X]; the start URL / region then live in that section.
+        block = Handler._section_body(text, header)
+        m = re.search(r"^\s*sso_session\s*=\s*(\S+)", block, re.M)
+        changed = False
+        if m:
+            session_header = f"[sso-session {m.group(1)}]"
+            sess_updates = {}
+            if start_url:
+                sess_updates["sso_start_url"] = start_url
+            if sso_region:
+                sess_updates["sso_region"] = sso_region
+            text, ch = Handler._upsert_section_keys(text, session_header, sess_updates)
+            changed |= ch
+            if role_name:
+                text, ch = Handler._upsert_section_keys(text, header, {"sso_role_name": role_name})
+                changed |= ch
+        else:
+            updates = {}
+            if start_url:
+                updates["sso_start_url"] = start_url
+            if sso_region:
+                updates["sso_region"] = sso_region
+            if role_name:
+                updates["sso_role_name"] = role_name
+            text, changed = Handler._upsert_section_keys(text, header, updates)
+
+        if changed:
+            aws_cfg_path.write_text(text, encoding=enc)
+            return "updated"
+        return "unchanged"
+
+    @staticmethod
+    def _section_body(text: str, header: str) -> str:
+        """Return the body of an ini section (without the header line)."""
+        lines = text.splitlines()
+        try:
+            start = next(i for i, l in enumerate(lines) if l.strip() == header)
+        except StopIteration:
+            return ""
+        body = []
+        for line in lines[start + 1:]:
+            if line.lstrip().startswith("["):
+                break
+            body.append(line)
+        return "\n".join(body)
+
+    @staticmethod
+    def _upsert_section_keys(text: str, header: str, updates: dict):
+        """Set key = value pairs inside one ini section, editing in place.
+
+        Only the targeted keys change; comments and unrelated lines survive.
+        Creates the section at the end of the file if it does not exist.
+        Returns (new_text, changed).
+        """
+        if not updates:
+            return text, False
+        lines = text.splitlines()
+        try:
+            start = next(i for i, l in enumerate(lines) if l.strip() == header)
+        except StopIteration:
+            if lines and lines[-1].strip():
+                lines.append("")
+            lines.append(header)
+            lines.extend(f"{k} = {v}" for k, v in updates.items())
+            return "\n".join(lines) + "\n", True
+
+        end = len(lines)
+        for i in range(start + 1, len(lines)):
+            if lines[i].lstrip().startswith("["):
+                end = i
+                break
+
+        changed = False
+        remaining = dict(updates)
+        for i in range(start + 1, end):
+            stripped = lines[i].strip()
+            if not stripped or stripped.startswith(("#", ";")) or "=" not in stripped:
+                continue
+            key = stripped.split("=", 1)[0].strip()
+            if key in remaining:
+                if stripped.split("=", 1)[1].strip() != remaining[key]:
+                    lines[i] = f"{key} = {remaining[key]}"
+                    changed = True
+                remaining.pop(key)
+
+        if remaining:
+            insert_at = end
+            while insert_at > start + 1 and not lines[insert_at - 1].strip():
+                insert_at -= 1
+            for k, v in remaining.items():
+                lines.insert(insert_at, f"{k} = {v}")
+                insert_at += 1
+            changed = True
+
+        return "\n".join(lines) + "\n", changed
 
     def _sso_login_status_payload(self):
         import yaml
