@@ -163,16 +163,49 @@ class HandshakeAcceptor:
                 # Already transitioning; treat as accepted if it eventually resolves.
                 if self._wait_accepted(orgs, handshake_id):
                     return AcceptResult(account_id, handshake_id, accepted=True)
-            msg = (
-                f"Failed to accept handshake {handshake_id} for account {account_id}: {e}. "
-                "The role must allow `organizations:AcceptHandshake`."
-            )
+            if code == "AccessDeniedException":
+                msg = self._access_denied_help(account_id, handshake_id, creds, e)
+            elif code == "HandshakeConstraintViolationException":
+                msg = (
+                    f"Failed to accept handshake {handshake_id} for account {account_id}: {e}. "
+                    "常见原因：该账户仍隶属于另一个组织——必须先脱离原组织"
+                    "（LeaveOrganization / 由原组织管理员移除）后才能接受新组织的邀请。"
+                )
+            else:
+                msg = (
+                    f"Failed to accept handshake {handshake_id} for account {account_id}: {e}. "
+                    "The role must allow `organizations:AcceptHandshake`."
+                )
             logger.error(msg)
             return AcceptResult(account_id, handshake_id, accepted=False, error=msg)
         except BotoCoreError as e:
             msg = f"Boto error accepting handshake for {account_id}: {e}"
             logger.error(msg)
             return AcceptResult(account_id, handshake_id, accepted=False, error=msg)
+
+    def _access_denied_help(self, account_id: str, handshake_id, creds: dict, err) -> str:
+        """Actionable guidance for AccessDenied on AcceptHandshake.
+
+        Includes the actual caller ARN: its AWSReservedSSO_<PermissionSet>_...
+        segment reveals which permission set the credentials really carry.
+        """
+        identity = ""
+        try:
+            sts = boto3.Session(**creds).client("sts", region_name=self.orgs_region)
+            identity = sts.get_caller_identity().get("Arn", "")
+        except (ClientError, BotoCoreError):
+            pass
+        return (
+            f"Failed to accept handshake {handshake_id} for account {account_id}: {err}. "
+            + (f"当前调用身份: {identity} 。" if identity else "")
+            + "AccessDenied 有两种典型原因："
+              "1) Permission Set 不含 organizations:AcceptHandshake"
+              "（例如 PowerUserAccess 明确排除 organizations:*）——请改用 "
+              "AdministratorAccess，或按 policy/sso-permission-set.json 自定义"
+              "（同时需要 iam:CreateServiceLinkedRole）；"
+              "2) 旧组织的 SCP 拒绝了 organizations:AcceptHandshake / LeaveOrganization"
+              "——需要旧组织管理员在其管理账户检查该账户/所属 OU 的 SCP 并放行。"
+        )
 
     def _wait_accepted(self, orgs_client, handshake_id: str) -> bool:
         for _ in range(self.poll_max_attempts):
